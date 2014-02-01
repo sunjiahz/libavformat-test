@@ -26,7 +26,7 @@ extern "C" {
 
 #define ERRSTR_LEN      4096
 
-void do_job(char *infname, char *outfname, char *out_fmt_name){
+void remux(const char *infname, const char *outfname, const char *out_fmt_name){
     int res;
     unsigned int    i=0;
     char error_av[ERRSTR_LEN];
@@ -42,21 +42,36 @@ void do_job(char *infname, char *outfname, char *out_fmt_name){
     }
     //ic->flags |= AVFMT_FLAG_NONBLOCK;
 
-    /* Open input */
+
+    /* 
+    	Open input 
+    */
     res = avformat_open_input(&ic, infname, NULL, NULL);
     av_log(NULL, AV_LOG_DEBUG, "avformat_open_input: %s for '%s'\n", (res>=0)?"passed":"failed", infname);
     if(res<0){
         av_log(NULL, AV_LOG_ERROR, "Failed to open input file\n");
+        memset(error_av, 0, ERRSTR_LEN);
+        av_make_error_string(error_av, ERRSTR_LEN, res);
+        av_log(NULL, AV_LOG_INFO, "error: %s\n", error_av);
+
         exit(1);
     }
     av_log(NULL, AV_LOG_INFO, "Opening input file... [ DONE ]\n");
     res = avformat_find_stream_info(ic, NULL);
     if(res<0){
         av_log(NULL, AV_LOG_INFO, "Finding input format... [ FAIL ]\n");
+        memset(error_av, 0, ERRSTR_LEN);
+        av_make_error_string(error_av, ERRSTR_LEN, res);
+        av_log(NULL, AV_LOG_INFO, "error: %s\n", error_av);
+
         exit(1);
     }
     av_log(NULL, AV_LOG_INFO, "Guessing input format... [ DONE ]\n");
-    /* Open output */
+
+
+    /* 
+    	Open output 
+    */
     oc = avformat_alloc_context();
     if(!oc){
         av_log(NULL, AV_LOG_ERROR, "Allocating output context... [ FAIL ]\n");
@@ -69,13 +84,19 @@ void do_job(char *infname, char *outfname, char *out_fmt_name){
     }
     av_log(NULL, AV_LOG_INFO, "Guessing output format: %s... [ DONE ]\n", oc->oformat->name);
     memmove(oc->filename, outfname, strlen(outfname));
-    if(avio_open(&oc->pb, outfname, AVIO_FLAG_WRITE)<0){
+
+    res = avio_open(&oc->pb, outfname, AVIO_FLAG_WRITE);
+    if(res<0){
+        memset(error_av, 0, ERRSTR_LEN);
+        av_make_error_string(error_av, ERRSTR_LEN, res);
+        av_log(NULL, AV_LOG_INFO, "avio_open error: %s\n", error_av);
         exit(1);
     }
-    if(oc==NULL){
-        exit(1);
-    }
-    /* map input video streams to output streams */
+
+
+    /* 
+    	map input video streams to output streams 
+    */
     stream_map = (int *)calloc(ic->nb_streams, sizeof(ic->nb_streams));
     memset(stream_map, 0xff, ic->nb_streams*sizeof(ic->nb_streams));
     for(i=0; i<ic->nb_streams; i++){
@@ -85,11 +106,16 @@ void do_job(char *infname, char *outfname, char *out_fmt_name){
         stream = avformat_new_stream(oc, ic->streams[i]->codec->codec);
         if(!stream){
             av_log(NULL, AV_LOG_INFO, "Adding output stream type %i [ FAIL ]\n", ic->streams[i]->codec->codec_type);
-               exit(1);
+            exit(1);
         }
-        if(avcodec_copy_context(stream->codec, ic->streams[i]->codec)!=0){
+        res = avcodec_copy_context(stream->codec, ic->streams[i]->codec);
+        if(res!=0){
             av_log(NULL, AV_LOG_ERROR, "Copying codec context for stream %i [ FAIL ]\n", i);
-               exit(1);
+            memset(error_av, 0, ERRSTR_LEN);
+            av_make_error_string(error_av, ERRSTR_LEN, res);
+            av_log(NULL, AV_LOG_INFO, "error: %s\n", error_av);
+
+            exit(1);
         }
         av_log(NULL, AV_LOG_INFO, "Adding output stream type %i [ DONE ]\n", ic->streams[i]->codec->codec_type);
         stream->id = oc->nb_streams-1;
@@ -101,22 +127,30 @@ void do_job(char *infname, char *outfname, char *out_fmt_name){
     av_log(NULL, AV_LOG_INFO, "Mapping all video streams... [ DONE ]\n");
     oc->duration = ic->duration;
     oc->bit_rate = ic->bit_rate;
-    /* write header */
+    
+    
+    /* 
+    	write output header 
+    */
     res = avformat_write_header(oc, NULL);
     if(res<0){
-        av_log(NULL, AV_LOG_ERROR, "Failed to write output header\n");
+        av_log(NULL, AV_LOG_ERROR, "Writing output header... [ FAIL ]\n");
         memset(error_av, 0, ERRSTR_LEN);
         av_make_error_string(error_av, ERRSTR_LEN, res);
-        av_log(NULL, AV_LOG_ERROR, "error: %s\n", error_av);
+        av_log(NULL, AV_LOG_INFO, "error: %s\n", error_av);
+
         exit(1);
     }
     av_log(NULL, AV_LOG_INFO, "Writing output header... [ DONE ]\n");
-    /* copy all input video frames to output */
+
+    /* 
+    	Remuxing: copy all input video frames to output w/o decoding
+    */
     for(i=0; av_read_frame(ic, &inpacket)>=0; i++, av_free_packet(&inpacket)) {
         idx = inpacket.stream_index;
         if((unsigned)idx>=ic->nb_streams){
             // drop the packet;
-            av_log(NULL, AV_LOG_WARNING, "Invalid stream #%i, max expected %i\n", idx, ic->nb_streams);
+            av_log(NULL, AV_LOG_WARNING, "Invalid stream #%u, max expected %u\n", (unsigned)idx, ic->nb_streams);
             continue;
         }
         stream = ic->streams[idx];
@@ -137,16 +171,25 @@ void do_job(char *infname, char *outfname, char *out_fmt_name){
         av_free_packet(&outpacket);
     }
     av_log(NULL, AV_LOG_INFO, "Remuxing video streams... [ DONE ]\n");
-    /* write output trailer */
+
+    
+    /* 
+    	write output trailer 
+    */
     res = av_write_trailer(oc);
     if(res<0){
         av_log(NULL, AV_LOG_INFO, "Writing output trailer... [ FAIL ]\n");
         memset(error_av, 0, ERRSTR_LEN);
         av_make_error_string(error_av, ERRSTR_LEN, res);
         av_log(NULL, AV_LOG_ERROR, "error: %s\n", error_av);
+
         exit(1);
     }
     av_log(NULL, AV_LOG_INFO, "Writing output trailer... [ DONE ]\n");
+    
+    /*
+    	Close input output
+    */
     for(idx=0;(unsigned)idx<oc->nb_streams; idx++){
         avcodec_close(oc->streams[idx]->codec);
         av_freep(&oc->streams[idx]);
@@ -155,6 +198,7 @@ void do_job(char *infname, char *outfname, char *out_fmt_name){
     if (oc->oformat&&!(oc->oformat->flags & AVFMT_NOFILE))
         avio_close(oc->pb);
     av_log(NULL, AV_LOG_INFO, "Closing output format... [ DONE ]\n");
+    
     avformat_close_input(&ic);
     if(stream_map){
         free(stream_map);
@@ -175,13 +219,13 @@ void    set_log_level(int level){
 int main(int argc, char* argv[]){
     init_framework();
     set_log_level(AV_LOG_DEBUG);
-    if(argc!=4){
-        printf("Usage: <inpufile> <outputfile> <outputformat>");
+
+    if(argc!=3){
+        printf("Usage: <inpufile> <outputfile>");
         return -1;
     }
     
-    do_job(argv[1], argv[2], argv[3]);
-
+    remux(argv[1], argv[2], "avi");
     return 0;
 }
 
